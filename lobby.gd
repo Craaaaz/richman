@@ -6,32 +6,35 @@ extends Control
 # 預設連線設定
 const DEFAULT_PORT = 7777
 const MAX_CLIENTS = 4
-const GAME_SCENE_PATH = "res://gamescene.tscn" # 遊戲場景路徑
 
 # 網路物件
 var peer = ENetMultiplayerPeer.new()
 
-# UI 元件
+# UI 元件 (會在 _ready 動態建立，方便您直接掛載測試)
 var main_container: VBoxContainer
 var ip_input: LineEdit
 var status_label: Label
 var host_button: Button
 var join_button: Button
-var start_game_button: Button # 新增：開始遊戲按鈕
 
 func _ready():
 	# 建立簡易 UI
 	_setup_ui()
 	
 	# 連接網路訊號 (Signal)
+	# 當有玩家連線進來 (Server 端觸發)
 	multiplayer.peer_connected.connect(_on_player_connected)
+	# 當有玩家斷線 (Server 端觸發)
 	multiplayer.peer_disconnected.connect(_on_player_disconnected)
+	# 當成功連上 Server (Client 端觸發)
 	multiplayer.connected_to_server.connect(_on_connected_ok)
+	# 當連線失敗 (Client 端觸發)
 	multiplayer.connection_failed.connect(_on_connected_fail)
+	# 當與 Server 斷開 (Client 端觸發)
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
 
 func _setup_ui():
-	# 設定根節點填滿螢幕 (從上次修改繼承，確保佈局正常)
+	# 設定根節點填滿螢幕
 	anchor_right = 1
 	anchor_bottom = 1
 	
@@ -57,13 +60,13 @@ func _setup_ui():
 	main_container.add_child(ip_label)
 	
 	ip_input = LineEdit.new()
-	ip_input.text = "127.0.0.1" # 預設本機
+	ip_input.text = "127.0.0.1" 
 	ip_input.placeholder_text = "輸入 Host IP"
 	ip_input.alignment = HORIZONTAL_ALIGNMENT_CENTER # 文字置中
 	ip_input.custom_minimum_size = Vector2(300, 40) # 稍微加寬加高
 	main_container.add_child(ip_input)
 	
-	# 按鈕容器 (水平排列 Host/Join)
+	# 按鈕容器
 	var btn_container = HBoxContainer.new()
 	btn_container.alignment = BoxContainer.ALIGNMENT_CENTER
 	btn_container.add_theme_constant_override("separation", 20)
@@ -80,14 +83,6 @@ func _setup_ui():
 	join_button.text = "加入遊戲 (Join)"
 	join_button.pressed.connect(_on_join_pressed)
 	btn_container.add_child(join_button)
-	
-	# 新增：開始遊戲按鈕 (垂直堆疊在 Host/Join 下方)
-	start_game_button = Button.new()
-	start_game_button.text = "開始遊戲"
-	start_game_button.pressed.connect(_on_start_game_pressed)
-	start_game_button.disabled = true # 預設禁用
-	start_game_button.custom_minimum_size = Vector2(200, 50)
-	main_container.add_child(start_game_button)
 	
 	# 狀態顯示
 	status_label = Label.new()
@@ -108,14 +103,13 @@ func _on_host_pressed():
 	peer.host.compress(ENetConnection.COMPRESS_RANGE_CODER)
 	multiplayer.multiplayer_peer = peer
 	
-	# Host 加入自己 (ID 1)
-	_on_player_connected(1) 
-	
 	status_label.text = "伺服器已建立！等待玩家加入...\n(您的 IP: " + _get_local_ip() + ")"
 	status_label.modulate = Color.GREEN
-	_disable_lobby_buttons()
-	_check_game_start_state()
+	_disable_buttons()
 	
+	# 這裡可以載入遊戲主場景，或者等待所有玩家到齊
+	# change_scene_to_game()
+
 func _on_join_pressed():
 	var ip = ip_input.text
 	if ip == "":
@@ -130,46 +124,24 @@ func _on_join_pressed():
 		
 	peer.host.compress(ENetConnection.COMPRESS_RANGE_CODER)
 	multiplayer.multiplayer_peer = peer
-	_disable_lobby_buttons()
-
-func _on_start_game_pressed():
-	# 只有 Host (ID=1) 可以開始遊戲
-	if multiplayer.is_server() and multiplayer.get_unique_id() == 1:
-		# 廣播所有玩家準備好，並切換場景
-		rpc("start_game")
-	else:
-		# 如果 Client 點了，應該不會發生，因為按鈕預設禁用
-		status_label.text = "只有主機可以開始遊戲。"
-		status_label.modulate = Color.RED
-
+	_disable_buttons()
 
 # --- 網路事件回調 ---
 
 func _on_player_connected(id):
-	# Server 端觸發
-	if multiplayer.is_server():
-		# 刷新狀態標籤，顯示總玩家數
-		var peer_count = multiplayer.get_peers().size() + 1 # 包含 Host 自己
-		status_label.text = "玩家已連線 (ID: %d)。總人數: %d/%d" % [id, peer_count, MAX_CLIENTS]
-		status_label.modulate = Color.GREEN
-		_check_game_start_state()
-	# Client 端觸發 (如果 Server 廣播有人連線，Client 會收到這個訊號，但通常我們只在 Server 端處理人數變動)
-	# 這裡我們主要關注 Server 端的廣播狀態更新
+	# 這是 Server 端會收到的訊號 (或是其他 Client 收到有人加入)
+	status_label.text += "\n玩家已連線 (ID: " + str(id) + ")"
 
 func _on_player_disconnected(id):
-	# Server 端觸發
-	if multiplayer.is_server():
-		var peer_count = multiplayer.get_peers().size() + 1
-		status_label.text += "\n玩家離開 (ID: " + str(id) + ")。總人數: %d/%d" % [peer_count, MAX_CLIENTS]
-		_check_game_start_state()
+	status_label.text += "\n玩家離開 (ID: " + str(id) + ")"
 
 func _on_connected_ok():
-	# Client 端成功連上 Server 後觸發
+	# 這是 Client 端成功連上 Server 後觸發
 	status_label.text = "連線成功！已加入遊戲。"
 	status_label.modulate = Color.GREEN
 
 func _on_connected_fail():
-	# Client 端連線失敗觸發
+	# 這是 Client 端連線失敗觸發
 	status_label.text = "連線失敗，請檢查 IP 或防火牆。"
 	status_label.modulate = Color.RED
 	_reset_ui()
@@ -179,58 +151,19 @@ func _on_server_disconnected():
 	status_label.text = "與伺服器斷開連線。"
 	status_label.modulate = Color.RED
 	_reset_ui()
-	
-# --- 遊戲開始邏輯 (RPC) ---
 
-@rpc("any_peer", "call_local")
-func start_game():
-	# 此 RPC 在所有成功連線的客戶端上執行
-	if multiplayer.is_server():
-		# Host 切換場景
-		print("Host: Starting game, changing scene.")
-		get_tree().change_scene_to_file(GAME_SCENE_PATH)
-	else:
-		# Client 切換場景
-		print("Client: Starting game, changing scene.")
-		get_tree().change_scene_to_file(GAME_SCENE_PATH)
-	
 # --- 輔助功能 ---
 
-func _disable_lobby_buttons():
+func _disable_buttons():
 	host_button.disabled = true
 	join_button.disabled = true
 	ip_input.editable = false
 
-func _enable_lobby_buttons():
+func _reset_ui():
 	host_button.disabled = false
 	join_button.disabled = false
 	ip_input.editable = true
-	start_game_button.disabled = true # 確保開始按鈕在重置時禁用
-
-func _reset_ui():
-	_enable_lobby_buttons()
 	multiplayer.multiplayer_peer = null # 清除 peer
-	status_label.text = "狀態: 等待操作..."
-	status_label.modulate = Color(0.7, 0.7, 0.7)
-	
-func _check_game_start_state():
-	# 只有 Host 才能啟用開始按鈕
-	if multiplayer.is_server() and multiplayer.get_unique_id() == 1:
-		# 獲取總玩家數 (Peer Count + Host 自己)
-		if multiplayer.multiplayer_peer is ENetMultiplayerPeer:
-			var current_players = multiplayer.get_peers().size() + 1
-			
-			if current_players >= 2 and current_players <= MAX_CLIENTS:
-				start_game_button.disabled = false
-				status_label.text = "準備就緒！總人數: %d/%d。按 '開始遊戲'。" % [current_players, MAX_CLIENTS]
-			else:
-				start_game_button.disabled = true
-				status_label.text = "等待玩家加入... (目前人數: %d/%d)" % [current_players, MAX_CLIENTS]
-		else:
-			start_game_button.disabled = true # 應在 Host 建立後保證 multiplayer_peer 存在
-	else:
-		# Client 端無法控制開始按鈕，保持禁用
-		start_game_button.disabled = true
 
 func _get_local_ip():
 	# 嘗試取得本機 IP 以顯示給 Host 看

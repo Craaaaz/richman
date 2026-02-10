@@ -1,0 +1,33 @@
+[gd_scene format=3 uid="uid://colspgctufg13"]
+
+[ext_resource type="Script" uid="uid://gamescene_script" path="res://gamescene.gd" id="1_gamescene"]
+
+[node name="gamescene" type="Control" unique_id=288385013]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_gamescene")
+
+[node name="ColorRect" type="ColorRect" parent="." unique_id=1969499733]
+layout_mode = 0
+anchor_right = 1.0
+anchor_bottom = 1.0
+size_flags_horizontal = 3
+size_flags_vertical = 3
+color = Color(0.61049926, 0.7043228, 0.89791447, 1)
+
+[node name="DiceButton" type="Button" parent="."]
+layout_mode = 2
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -120.0
+offset_top = -120.0
+offset_right = -20.0
+offset_bottom = -20.0
+text = "骰子\n0"
+custom_minimum_size = Vector2(100, 100)
