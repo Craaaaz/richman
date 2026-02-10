@@ -2,6 +2,24 @@
 
 這是一個使用 Godot 4.6+ (Forward Plus) 開發的網格基礎多人連線大富翁遊戲。專案使用 ENet 進行網路同步，並包含地圖編輯器與基礎的經濟系統。
 
+## 🏗️ 專案架構 (Project Architecture)
+
+```text
+Game Root
+├── Main Menu (menu.gd)          # 遊戲入口：主選單
+└── Lobby (Lobby.gd)             # 核心控制器：多人連線、回合管理、遊戲邏輯
+    ├── Network Manager          # 處理 ENet 連線、RPC 同步
+    ├── Map System
+    │   ├── Map Editor (MapEditor.gd)    # 地圖編輯器 (20x20 網格)
+    │   ├── Map Renderer (Site.gd)       # 地圖渲染器
+    │   └── Config (Venue_configuration.gd) # 地塊屬性設定 (起點、地產等)
+    ├── Player System
+    │   └── Player (Player.gd)   # 玩家實體：移動動畫、資金 ($)
+    └── UI System (HUD)
+        ├── GameUI (GameUI.gd)   # 抬頭顯示器：擲骰、回合資訊、資金面板
+        └── Direction Selector   # 方向選擇器 (處理叉路)
+```
+
 ## 📅 更新日誌 (Changelog)
 
 ### [2026-02-10] 核心功能優化與系統擴充
