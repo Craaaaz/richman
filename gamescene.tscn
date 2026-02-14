@@ -19,6 +19,13 @@ size_flags_horizontal = 3
 size_flags_vertical = 3
 color = Color(0.61049926, 0.7043228, 0.89791447, 1)
 
+[node name="BoardContainer" type="Control" parent="."]
+layout_mode = 0
+anchor_right = 1.0
+anchor_bottom = 1.0
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
 [node name="DiceButton" type="Button" parent="."]
 layout_mode = 2
 anchor_left = 1.0
@@ -31,3 +38,6 @@ offset_right = -20.0
 offset_bottom = -20.0
 text = "骰子\n0"
 custom_minimum_size = Vector2(100, 100)
+
+# 玩家節點現在由程式動態建立
+# 移除靜態玩家節點，改由gamescene.gd動態建立

@@ -1,5 +1,8 @@
 extends Control
 
+# 全域變數引用
+var global: Node
+
 # 大富翁連線大廳 (Lobby.gd)
 # 用於建立連線、加入遊戲與管理連線狀態
 
@@ -20,6 +23,9 @@ var join_button: Button
 var start_game_button: Button # 新增：開始遊戲按鈕
 
 func _ready():
+	# 取得全域變數節點
+	global = get_node("/root/Global")
+	
 	# 建立簡易 UI
 	_setup_ui()
 	
@@ -108,6 +114,9 @@ func _on_host_pressed():
 	peer.host.compress(ENetConnection.COMPRESS_RANGE_CODER)
 	multiplayer.multiplayer_peer = peer
 	
+	# 清除之前的玩家資料
+	global.clear_all_players()
+	
 	# Host 加入自己 (ID 1)
 	_on_player_connected(1) 
 	
@@ -148,10 +157,29 @@ func _on_start_game_pressed():
 func _on_player_connected(id):
 	# Server 端觸發
 	if multiplayer.is_server():
-		# 刷新狀態標籤，顯示總玩家數
+		# 在 global 中註冊玩家並分配順序
+		global.add_player(id)
+		
+		# 取得玩家中文名稱
+		var player_name = global.get_player_name_by_id(id)
+		
+		# 刷新狀態標籤，顯示總玩家數和中文名稱
 		var peer_count = multiplayer.get_peers().size() + 1 # 包含 Host 自己
-		status_label.text = "玩家已連線 (ID: %d)。總人數: %d/%d" % [id, peer_count, MAX_CLIENTS]
+		status_label.text = player_name + " 已連線 (ID: %d)。總人數: %d/%d" % [id, peer_count, MAX_CLIENTS]
 		status_label.modulate = Color.GREEN
+		
+		# 步驟1：同步新玩家的順序給所有現有客戶端
+		rpc("sync_player_order", id, global.player_id_to_order[id])
+		
+		# 步驟2：同步所有現有玩家的順序給新連接的客戶端
+		# 收集所有玩家的順序映射
+		var all_player_orders: Dictionary = {}
+		for player_id in global.player_id_to_order:
+			all_player_orders[player_id] = global.player_id_to_order[player_id]
+		
+		print("向新玩家 ", id, " 同步所有玩家順序：", all_player_orders)
+		rpc_id(id, "sync_all_player_orders", all_player_orders)
+		
 		_check_game_start_state()
 	# Client 端觸發 (如果 Server 廣播有人連線，Client 會收到這個訊號，但通常我們只在 Server 端處理人數變動)
 	# 這裡我們主要關注 Server 端的廣播狀態更新
@@ -159,8 +187,14 @@ func _on_player_connected(id):
 func _on_player_disconnected(id):
 	# Server 端觸發
 	if multiplayer.is_server():
+		# 取得玩家中文名稱
+		var player_name = global.get_player_name_by_id(id)
+		
+		# 從 global 中移除玩家
+		global.remove_player(id)
+		
 		var peer_count = multiplayer.get_peers().size() + 1
-		status_label.text += "\n玩家離開 (ID: " + str(id) + ")。總人數: %d/%d" % [peer_count, MAX_CLIENTS]
+		status_label.text += "\n" + player_name + " 離開 (ID: " + str(id) + ")。總人數: %d/%d" % [peer_count, MAX_CLIENTS]
 		_check_game_start_state()
 
 func _on_connected_ok():
@@ -180,6 +214,62 @@ func _on_server_disconnected():
 	status_label.modulate = Color.RED
 	_reset_ui()
 	
+# --- 玩家順序同步 RPC ---
+
+@rpc("any_peer", "call_local")
+func sync_player_order(player_id: int, order: int):
+	# 同步單一玩家順序資訊到所有客戶端
+	print("同步玩家順序：ID ", player_id, " -> 順序 ", order)
+	
+	# 更新 global 中的玩家順序映射
+	global.player_id_to_order[player_id] = order
+	global.player_order_to_id[order] = player_id
+	
+	# 更新玩家資訊中的名稱
+	if not global.players.has(player_id):
+		global.players[player_id] = {}
+	
+	global.players[player_id]["name"] = global.get_player_chinese_name(order)
+	global.players[player_id]["order"] = order
+	
+	print("玩家順序已同步：", global.get_player_name_by_id(player_id), " (ID: ", player_id, ", 順序: ", order, ")")
+
+@rpc("any_peer", "call_local")
+func sync_all_player_orders(player_orders: Dictionary):
+	# 批量同步所有玩家順序資訊到指定客戶端
+	# player_orders 格式: {player_id: order, ...}
+	print("批量同步所有玩家順序：", player_orders)
+	
+	# 清除現有玩家順序映射
+	global.player_id_to_order.clear()
+	global.player_order_to_id.clear()
+	global.players.clear()
+	
+	# 更新所有玩家順序映射
+	for player_id in player_orders:
+		var order = player_orders[player_id]
+		global.player_id_to_order[player_id] = order
+		global.player_order_to_id[order] = player_id
+		
+		# 更新玩家資訊
+		global.players[player_id] = {
+			"name": global.get_player_chinese_name(order),
+			"order": order,
+			"money": global.starting_money,
+			"position": 0
+		}
+	
+	# 更新計數器：找出最大的順序值加1
+	var max_order = 0
+	for order in player_orders.values():
+		if order > max_order:
+			max_order = order
+	global.player_order_counter = max_order + 1
+	
+	print("所有玩家順序批量同步完成，共 ", player_orders.size(), " 名玩家")
+	for player_id in player_orders:
+		print("  - ", global.get_player_name_by_id(player_id), " (ID: ", player_id, ", 順序: ", player_orders[player_id], ")")
+
 # --- 遊戲開始邏輯 (RPC) ---
 
 @rpc("any_peer", "call_local")
