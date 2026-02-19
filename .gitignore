@@ -1,6 +1,10 @@
 ### Godot ###
 # Godot 4+ specific ignores
 .godot/
+*.tmp
+
+# 排除所有 .gd.uid 檔案
+*.gd.uid
 
 # Godot-specific ignores
 .import/
