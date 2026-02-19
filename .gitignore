@@ -19,4 +19,7 @@ export_presets.cfg
 data_*/
 mono_crash.*.json
 
+# 排除特定的編輯器或代理設定檔
+AGENT.md
+
 # End of https://www.toptal.com/developers/gitignore/api/godot
