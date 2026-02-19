@@ -13,7 +13,17 @@ var player_order_to_id: Dictionary = {}  # 順序到玩家ID的映射
 var my_id = 0
 
 # 遊戲設定（例如：起始資金）
-var starting_money = 1500
+var starting_money = 5000
+
+# 遊戲設定字典（可配置）
+var game_settings = {
+	"starting_money": 5000,
+	"pass_start_bonus": 5000,
+	"host_only_settings": true
+}
+
+# 設定檔案路徑
+const SETTINGS_FILE_PATH = "user://game_settings.cfg"
 
 # 中文玩家名稱對照表
 const PLAYER_CHINESE_NAMES: Array[String] = [
@@ -42,6 +52,57 @@ func get_player_id_by_order(order: int) -> int:
 		return player_order_to_id[order]
 	return -1
 
+# --- 設定檔案管理 ---
+
+# 儲存設定到檔案
+func save_settings():
+	var config = ConfigFile.new()
+	config.set_value("game", "starting_money", game_settings["starting_money"])
+	config.set_value("game", "pass_start_bonus", game_settings["pass_start_bonus"])
+	var error = config.save(SETTINGS_FILE_PATH)
+	if error == OK:
+		print("遊戲設定已儲存: ", game_settings)
+	else:
+		print("儲存設定失敗: ", error)
+
+# 從檔案載入設定
+func load_settings():
+	var config = ConfigFile.new()
+	var error = config.load(SETTINGS_FILE_PATH)
+	if error == OK:
+		game_settings["starting_money"] = config.get_value("game", "starting_money", 5000)
+		game_settings["pass_start_bonus"] = config.get_value("game", "pass_start_bonus", 5000)
+		print("遊戲設定已載入: ", game_settings)
+	else:
+		print("載入設定失敗，使用預設值: ", game_settings)
+
+# 同步遊戲設定 RPC
+@rpc("any_peer", "call_local")
+func sync_game_settings(settings_dict: Dictionary):
+	game_settings = settings_dict.duplicate()
+	print("遊戲設定已同步: ", game_settings)
+	
+	# 更新 starting_money 變數以保持向後兼容
+	starting_money = game_settings["starting_money"]
+	
+	# 更新所有現有玩家的資金至新的起始金額
+	var new_starting_money = game_settings["starting_money"]
+	for player_id in players:
+		# 確保玩家字典有 money 鍵
+		if not players[player_id].has("money"):
+			players[player_id]["money"] = new_starting_money
+			print("為玩家", get_player_name_by_id(player_id), "新增資金鍵: $", new_starting_money)
+		else:
+			players[player_id]["money"] = new_starting_money
+			print("已更新玩家", get_player_name_by_id(player_id), "資金至 $", new_starting_money)
+		
+		# 通知遊戲場景更新介面即可，不需要在此發送 sync_player_money RPC
+		# 因為 sync_game_settings 本身就是一個同步所有人的 RPC
+		pass
+	
+	# 通知遊戲場景更新UI（如果遊戲場景存在）
+	_notify_game_scene_settings_changed()
+
 # 添加玩家並分配順序
 func add_player(id: int):
 	if player_id_to_order.has(id):
@@ -63,7 +124,7 @@ func add_player(id: int):
 	players[id] = {
 		"name": chinese_name,
 		"order": order,
-		"money": starting_money,
+		"money": game_settings["starting_money"],
 		"position": 0 # 玩家目前在哪個格子（索引）
 	}
 	
@@ -140,3 +201,8 @@ func clear_all_players():
 	player_order_to_id.clear()
 	player_order_counter = 1
 	print("所有玩家資料已清除")
+
+# 通知遊戲場景設定已變更
+func _notify_game_scene_settings_changed():
+	get_tree().call_group("game_scene", "on_game_settings_changed")
+	print("已通知遊戲場景更新設定")

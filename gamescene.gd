@@ -34,6 +34,11 @@ const MIN_SYNC_DISTANCE: float = 5.0 # 最小同步距離，避免微小移動�
 var player_info_container: VBoxContainer # 玩家資訊容器（左下角）
 var player_info_labels: Dictionary = {} # 儲存玩家資訊標籤 {player_id: label_node}
 
+# 浮動文字動畫系統
+var money_effect_nodes: Dictionary = {}  # {player_id: Array[Label]}
+var active_tweens: Array = []  # 追蹤進行中的 Tween 實例
+var is_processing_reward: bool = false  # 防止重複觸發獎勵
+
 # 棋盤設定 - 口字形棋盤
 const BOARD_CELL_SIZE: int = 60 # 每個格子大小 (縮小以適應螢幕)
 const BOARD_OUTER_SIZE: int = 8 # 外圍邊長 (格子數，減少以適應螢幕)
@@ -85,9 +90,22 @@ func _ready():
 	# 除錯：檢查玩家順序狀態
 	print("玩家順序狀態檢查：")
 	print("  player_id_to_order: ", global.player_id_to_order)
+	
+	# 加入遊戲場景組別，用於設定變更通知
+	add_to_group("game_scene")
 	print("  player_order_to_id: ", global.player_order_to_id)
 	print("  players: ", global.players.keys())
 	print("  get_players_in_order(): ", global.get_players_in_order())
+	
+	# 檢查玩家資金狀態
+	print("玩家資金狀態檢查：")
+	for player_id in global.players:
+		var player_data = global.players[player_id]
+		var money = player_data.get("money", "未設定")
+		print("  ", global.get_player_name_by_id(player_id), ": $", money)
+	
+	# 初始更新玩家資訊顯示
+	_update_player_info_display()
 	
 	# === 場景載入同步機制 ===
 	# 不直接初始化玩家，而是通知伺服器「我的場景已載入」
@@ -226,6 +244,7 @@ func _create_board_visualization():
 		label.text = str(i)
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		label.position = Vector2(4, 2)
 		
 		# 根據背景調整文字顏色
 		if is_corner:
@@ -341,9 +360,12 @@ func _update_player_info_display():
 		
 		# 取得玩家資訊
 		var player_name = global.get_player_name_by_id(player_id)
-		var player_money = 1500  # 預設起始資金（未來從 global.players 取得）
+		var player_money = global.game_settings["starting_money"]  # 使用設定中的起始資金
 		if global.players.has(player_id):
-			player_money = global.players[player_id].get("money", 1500)
+			player_money = global.players[player_id].get("money", global.game_settings["starting_money"])
+		
+		# 調試：記錄資金來源
+		print("玩家", player_name, "資金: $", player_money, " (設定: $", global.game_settings["starting_money"], ")")
 		
 		# 設定標籤文字
 		player_info_label.text = "%s: $%d" % [player_name, player_money]
@@ -364,6 +386,112 @@ func _update_player_info_display():
 		player_info_labels[player_id] = player_row
 	
 	print("玩家資訊顯示已更新，共 %d 名玩家" % player_ids.size())
+
+# --- 浮動文字動畫系統 ---
+
+func _show_money_change_effect(player_id: int, change_amount: int):
+	# 檢查玩家資訊行是否存在
+	if not player_info_labels.has(player_id):
+		print("無法顯示金錢變動效果：玩家", player_id, "的資訊行不存在")
+		return
+	
+	var player_row = player_info_labels[player_id]
+	if not player_row or not is_instance_valid(player_row):
+		print("無法顯示金錢變動效果：玩家", player_id, "的資訊行無效")
+		return
+	
+	# 建立浮動文字標籤
+	var effect_label = Label.new()
+	effect_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	effect_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	effect_label.add_theme_font_size_override("font_size", 16)  # 稍大字體，提高可讀性
+	
+	# 設定文字和顏色
+	if change_amount >= 0:
+		effect_label.text = "+%d" % change_amount
+		effect_label.add_theme_color_override("font_color", Color(0, 0.7, 0, 1))  # 深綠色，提高對比度
+	else:
+		effect_label.text = "%d" % change_amount  # 負數自動顯示減號
+		effect_label.add_theme_color_override("font_color", Color(0.8, 0, 0, 1))  # 紅色
+	
+	# 設定初始位置（在玩家資訊標籤右側）
+	# 計算動態位置：玩家名稱標籤寬度約120px，加上間距
+	effect_label.position = Vector2(140, 5)
+	effect_label.modulate = Color(1, 1, 1, 1)
+	
+	# 添加到玩家行中
+	player_row.add_child(effect_label)
+	
+	# 儲存到追蹤陣列
+	if not money_effect_nodes.has(player_id):
+		money_effect_nodes[player_id] = []
+	
+	# 限制每個玩家同時顯示的動畫數量（最多3個）
+	if money_effect_nodes[player_id].size() >= 3:
+		# 移除最舊的動畫
+		var oldest_effect = money_effect_nodes[player_id][0]
+		if oldest_effect and is_instance_valid(oldest_effect):
+			oldest_effect.queue_free()
+		money_effect_nodes[player_id].remove_at(0)
+	
+	money_effect_nodes[player_id].append(effect_label)
+	
+	# 建立 Tween 動畫
+	# 使用 call_deferred 確保在下一幀安全地建立動畫
+	call_deferred("_create_money_effect_tween", player_id, effect_label)
+
+func _create_money_effect_tween(player_id: int, effect_label: Label):
+	# 檢查節點是否仍然有效
+	if not effect_label or not is_instance_valid(effect_label):
+		print("金錢變動效果標籤無效，跳過動畫")
+		return
+	
+	# 檢查玩家行是否仍然存在
+	if not player_info_labels.has(player_id):
+		print("玩家資訊行不存在，跳過動畫")
+		return
+	
+	var tween = create_tween()
+	if not tween:
+		print("無法建立 Tween 動畫")
+		return
+	
+	active_tweens.append(tween)
+	
+	# 動畫：向上移動 + 淡出（使用緩動效果）
+	tween.tween_property(effect_label, "position", Vector2(140, -25), 1.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(effect_label, "modulate:a", 0.0, 1.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	
+	# 動畫完成後清理
+	tween.tween_callback(_cleanup_money_effect.bind(player_id, effect_label))
+	
+	print("顯示金錢變動效果：玩家", global.get_player_name_by_id(player_id), " ", effect_label.text)
+
+func _cleanup_money_effect(player_id: int, effect_label: Label):
+	# 檢查參數有效性
+	if not effect_label:
+		print("清理金錢變動效果：無效的標籤")
+		return
+	
+	# 從追蹤陣列中移除
+	if money_effect_nodes.has(player_id):
+		var index = money_effect_nodes[player_id].find(effect_label)
+		if index != -1:
+			money_effect_nodes[player_id].remove_at(index)
+		
+		if money_effect_nodes[player_id].size() == 0:
+			money_effect_nodes.erase(player_id)
+	
+	# 移除節點
+	if is_instance_valid(effect_label):
+		effect_label.queue_free()
+	
+	# 從 active_tweens 中移除對應的 Tween
+	for i in range(active_tweens.size() - 1, -1, -1):
+		if not active_tweens[i] or not is_instance_valid(active_tweens[i]):
+			active_tweens.remove_at(i)
+	
+	print("清理金錢變動效果：玩家", global.get_player_name_by_id(player_id))
 
 func _initialize_players():
 	# === 此函數現在只由伺服器在所有 peer 就緒後調用 ===
@@ -484,7 +612,7 @@ func _create_player(player_id: int, position: Vector2):
 	
 	# 組裝節點
 	player_node.add_child(color_rect)
-	player_node.add_child(label)
+	#player_node.add_child(label)
 	add_child(player_node)
 	
 	# 儲存玩家
@@ -554,22 +682,49 @@ func _calculate_move_path():
 	player_position = board_positions[current_cell_index]
 	print("對齊玩家位置到格子 ", current_cell_index, ": ", player_position)
 	
+	# 檢查是否經過起點（現在在 sync_dice_result 中處理）
+	
 	# 根據骰子點數計算移動路徑
 	# 重要：從下一個格子開始，逐步移動到每個中間格子
 	for i in range(1, dice_value + 1):
-		var next_cell_index = (current_cell_index + i) % board_positions.size()
+		var next_cell_index = (current_cell_index + i) % TOTAL_CELLS
 		var next_position = board_positions[next_cell_index]
 		move_path.append(next_position)
 		print("  步驟 ", i, ": 從格子 ", current_cell_index, " 移動到格子 ", next_cell_index, " (位置: ", next_position, ")")
 	
 	print("移動路徑 (", move_path.size(), "步): ", move_path)
 
+# --- 經過起點獎勵檢測 ---
+
+func _check_pass_start_reward(player_id: int, start_cell: int, dice_value: int):
+	if not multiplayer.is_server():
+		return
+	
+	if is_processing_reward:
+		print("獎勵處理中，跳過重複檢測")
+		return
+	
+	# 檢查是否經過起點（正向跨越）
+	if (start_cell + dice_value) >= TOTAL_CELLS:
+		is_processing_reward = true
+		var bonus = global.game_settings["pass_start_bonus"]
+		print("玩家", global.get_player_name_by_id(player_id), "經過起點，獲得獎勵: $", bonus)
+		
+		# 確保獎勵大於0才發放
+		if bonus > 0:
+			update_player_money(player_id, bonus)
+		else:
+			print("起點獎勵為0，不發放獎勵")
+			is_processing_reward = false
+	else:
+		print("玩家", global.get_player_name_by_id(player_id), "未經過起點，無獎勵")
+
 func _find_current_cell_index() -> int:
 	# 找到離玩家位置最近的棋盤格子
 	var min_distance = INF
 	var closest_index = -1
 	
-	for i in range(board_positions.size()):
+	for i in range(TOTAL_CELLS):
 		var distance = player_position.distance_to(board_positions[i])
 		if distance < min_distance:
 			min_distance = distance
@@ -578,6 +733,10 @@ func _find_current_cell_index() -> int:
 	# 除錯資訊
 	if closest_index != -1:
 		print("找到最近格子: 索引 ", closest_index, "，距離 ", min_distance, "，玩家位置 ", player_position, "，格子位置 ", board_positions[closest_index])
+		
+		# 更新玩家在 global 中的位置追蹤
+		if global.players.has(my_player_id):
+			global.players[my_player_id]["position"] = closest_index
 	else:
 		print("錯誤：找不到最近格子，玩家位置 ", player_position)
 	
@@ -608,6 +767,9 @@ func _move_player(delta: float):
 			is_moving = false
 			move_path.clear()
 			current_path_index = 0
+			
+			# 重置獎勵處理狀態
+			is_processing_reward = false
 			
 			# 確保玩家位置對齊到最近的棋盤格子
 			var final_cell_index = _find_current_cell_index()
@@ -694,6 +856,11 @@ func sync_dice_result(player_id: int, value: int):
 	if player_id == my_player_id:
 		dice_value = value
 		_update_button_text()
+	
+	# 伺服器端：檢查是否經過起點並發放獎勵
+	if multiplayer.is_server():
+		var start_cell = global.players[player_id].get("position", 0)
+		_check_pass_start_reward(player_id, start_cell, value)
 
 @rpc("any_peer", "call_local")
 func sync_player_position(player_id: int, position: Vector2):
@@ -709,6 +876,19 @@ func sync_player_position(player_id: int, position: Vector2):
 	if player_id == my_player_id:
 		player_position = position
 		last_sync_position = position
+	
+	# 更新玩家在 global 中的位置追蹤（計算最近的格子）
+	var closest_index = -1
+	var min_distance = INF
+	for i in range(TOTAL_CELLS):
+		var distance = position.distance_to(board_positions[i])
+		if distance < min_distance:
+			min_distance = distance
+			closest_index = i
+	
+	if closest_index != -1 and global.players.has(player_id):
+		global.players[player_id]["position"] = closest_index
+		print("更新玩家", global.get_player_name_by_id(player_id), "位置索引: ", closest_index)
 
 @rpc("any_peer", "call_local")
 func sync_player(player_id: int, position: Vector2):
@@ -801,6 +981,13 @@ func _on_player_disconnected(player_id: int):
 func sync_player_money(player_id: int, money: int):
 	print("同步", global.get_player_name_by_id(player_id), "資金: $", money)
 	
+	# 計算金額變動量（用於動畫顯示）
+	var old_money = global.game_settings["starting_money"]
+	if global.players.has(player_id):
+		old_money = global.players[player_id].get("money", global.game_settings["starting_money"])
+	
+	var money_change = money - old_money
+	
 	# 更新全域玩家資金資訊
 	if global.players.has(player_id):
 		global.players[player_id]["money"] = money
@@ -813,6 +1000,10 @@ func sync_player_money(player_id: int, money: int):
 	
 	# 更新玩家資訊顯示
 	_update_player_info_display()
+	
+	# 顯示金錢變動動畫（如果有變動）
+	if money_change != 0:
+		_show_money_change_effect(player_id, money_change)
 
 # 更新玩家資金（伺服器端呼叫）
 func update_player_money(player_id: int, money_change: int):
@@ -820,24 +1011,28 @@ func update_player_money(player_id: int, money_change: int):
 		return
 	
 	# 計算新資金
-	var current_money = 1500
+	var current_money = global.game_settings["starting_money"]
 	if global.players.has(player_id):
-		current_money = global.players[player_id].get("money", 1500)
+		current_money = global.players[player_id].get("money", global.game_settings["starting_money"])
 	
 	var new_money = current_money + money_change
 	if new_money < 0:
 		new_money = 0
 	
-	# 更新全域資料
-	if global.players.has(player_id):
-		global.players[player_id]["money"] = new_money
-	else:
-		global.players[player_id] = {
-			"name": global.get_player_name_by_id(player_id),
-			"money": new_money
-		}
-	
-	# 廣播給所有客戶端
+	# 廣播給所有客戶端（包含本地伺服器，透過 call_local）
+	# 注意：不要在此處更新 global.players，讓 sync_player_money 統一處理，
+	# 這樣伺服器端的動畫才能正確計算 money_change
 	rpc("sync_player_money", player_id, new_money)
 	
-	print("玩家", global.get_player_name_by_id(player_id), "資金更新: $", current_money, " -> $", new_money)
+	print("玩家", global.get_player_name_by_id(player_id), "資金更新廣播: $", current_money, " -> $", new_money)
+
+# 遊戲設定變更時的回呼函數
+func on_game_settings_changed():
+	print("遊戲設定已變更，更新玩家資訊顯示")
+	print("當前遊戲設定: ", global.game_settings)
+	print("玩家資金狀態:")
+	for player_id in global.players:
+		var player_data = global.players[player_id]
+		var money = player_data.get("money", "未設定")
+		print("  ", global.get_player_name_by_id(player_id), ": $", money)
+	_update_player_info_display()
